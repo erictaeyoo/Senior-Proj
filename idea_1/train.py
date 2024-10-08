@@ -3,7 +3,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from PIL import Image
-from sklearn.model_selection import train_test_split
 from DeepfakeDetector import DeepfakeDetector
 import os
 import matplotlib.pyplot as plt
@@ -20,9 +19,12 @@ config = {
 # Initialize the detector
 model = DeepfakeDetector(config)
 
-# Define the directories for deepfake and real frames
-#deepfake_dir = ""
-#real_dir = ""
+# Define the directories for deepfake and real frames (training data)
+#deepfake_directory = 
+#real_directory =
+
+# Define a separate directory for testing data
+#test_directory = 
 
 # Define transformations for the images
 transform = transforms.Compose([
@@ -33,7 +35,7 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-
+# Dataset for training
 class DeepfakeDataset(torch.utils.data.Dataset):
     def __init__(self, deepfake_dir, real_dir, transform=None):
         self.deepfake_dir = deepfake_dir
@@ -57,16 +59,32 @@ class DeepfakeDataset(torch.utils.data.Dataset):
             img = self.transform(img)
         return img, label
 
-# Create the dataset
-dataset = DeepfakeDataset(deepfake_directory, real_directory, transform=transform)
+# Dataset for testing (only deepfake data from a separate directory)
+class TestDataset(torch.utils.data.Dataset):
+    def __init__(self, test_dir, transform=None):
+        self.test_dir = test_dir
+        self.transform = transform
 
-# Split dataset into training and testing sets
-train_indices, test_indices = train_test_split(range(len(dataset)), test_size=0.2, random_state=42, stratify=[label for _, label in dataset.data])
+        # Load all filenames and labels (assuming test directory only has deepfake frames)
+        self.test_images = [(os.path.join(test_dir, f), 1) for f in os.listdir(test_dir) if f.endswith(".jpg")]
+
+    def __len__(self):
+        return len(self.test_images)
+
+    def __getitem__(self, idx):
+        img_path, label = self.test_images[idx]
+        img = Image.open(img_path).convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+        return img, label
+
+# Create the dataset for training
+train_dataset = DeepfakeDataset(deepfake_directory, real_directory, transform=transform)
+
+# Create the dataset for testing (different deepfake frames from a new video)
+test_dataset = TestDataset(test_directory, transform=transform)
 
 # Create DataLoader for training and testing sets
-train_dataset = Subset(dataset, train_indices)
-test_dataset = Subset(dataset, test_indices)
-
 train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
 
@@ -189,5 +207,5 @@ def test(model, dataloader):
 # Start the training process
 train(model, train_loader, optimizer, num_epochs=1)
 
-# Test the model on the test dataset
+# Test the model on the separate test dataset (from the new directory)
 test(model, test_loader)
