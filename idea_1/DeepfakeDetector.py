@@ -28,6 +28,7 @@ import pywt
 import cv2
 import matplotlib.pyplot as plt
 
+
 logger = logging.getLogger(__name__)
 
 class DeepfakeDetector(nn.Module):

@@ -1,15 +1,18 @@
 import cv2
 import os
 import sys
+import glob
+import random
 
-def extract_frames_from_video(video_path, output_folder, frame_rate=1):
+def extract_frames_from_video(video_path, output_folder, frame_rate=1, video_id=0):
     """
-    Extract frames from a video file and save them as images.
+    Extract frames from a video file and save them as images in the output folder.
 
     Parameters:
     - video_path: Path to the input video file.
     - output_folder: Folder to save the extracted frames.
     - frame_rate: Extract one frame every 'frame_rate' frames.
+    - video_id: Unique identifier for the video to avoid filename collisions.
     """
     # Create the output directory if it doesn't exist
     if not os.path.exists(output_folder):
@@ -35,7 +38,8 @@ def extract_frames_from_video(video_path, output_folder, frame_rate=1):
 
         # Save every 'frame_rate' frames
         if current_frame % frame_rate == 0:
-            frame_filename = os.path.join(output_folder, f"frame_{saved_frame:05d}.jpg")
+            # Use video_id and saved_frame to generate unique filenames for each frame
+            frame_filename = os.path.join(output_folder, f"video_{video_id}_frame_{saved_frame:05d}_real.jpg")
             cv2.imwrite(frame_filename, frame)
             saved_frame += 1
 
@@ -44,32 +48,31 @@ def extract_frames_from_video(video_path, output_folder, frame_rate=1):
     cap.release()
     print(f"Extracted {saved_frame} frames from {video_path}")
 
-extract_frames_from_video(sys.argv[1], sys.argv[2])
 
 # For getting frames from multiple videos
-# import glob
+video_directory = sys.argv[1]  # Path to the directory containing your video files
+output_directory = sys.argv[2]  # Path to the output directory
+num_videos_to_extract = int(sys.argv[3])  # Number of videos to extract frames from
 
-# # Path to the directory containing your video files
-# video_directory = '/path/to/video/files'  # Update this path
-# output_directory = '/path/to/output/frames'  # Update this path
+# Supported video formats
+video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv']
 
-# # Supported video formats
-# video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv']
+# Get a list of all video files in the directory
+video_files = []
+for ext in video_extensions:
+    video_files.extend(glob.glob(os.path.join(video_directory, ext)))
 
-# # Get a list of all video files in the directory
-# video_files = []
-# for ext in video_extensions:
-#     video_files.extend(glob.glob(os.path.join(video_directory, ext)))
+print(f"Found {len(video_files)} video files.")
 
-# print(f"Found {len(video_files)} video files.")
+# Check if the requested number of videos is more than available videos
+if num_videos_to_extract > len(video_files):
+    num_videos_to_extract = len(video_files)
+    print(f"Requested number of videos exceeds available videos. Adjusting to {num_videos_to_extract}.")
 
-# # Extract frames from each video
-# for video_file in video_files:
-#     # Get the base name of the video file (without extension)
-#     video_name = os.path.splitext(os.path.basename(video_file))[0]
-    
-#     # Create a specific output folder for each video
-#     video_output_folder = os.path.join(output_directory, video_name)
-    
-#     # Extract frames
-#     extract_frames_from_video(video_file, video_output_folder, frame_rate=1)  # Adjust 'frame_rate' as needed
+# Randomly select a subset of videos
+selected_videos = random.sample(video_files, num_videos_to_extract)
+
+# Extract frames from each selected video
+for video_id, video_file in enumerate(selected_videos):
+    # Extract frames and store them in the shared output folder with unique filenames
+    extract_frames_from_video(video_file, output_directory, frame_rate=1, video_id=video_id)
