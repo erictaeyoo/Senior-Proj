@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sys
 from PIL import Image, UnidentifiedImageError
+import pickle
 
 # Define the configuration
 config = {
@@ -31,30 +32,17 @@ test_directory = sys.argv[3]
 # Define transformations for the images
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(10),
-    transforms.ColorJitter(brightness=0.1, contrast=0.1),
+    # transforms.RandomHorizontalFlip(),
+    # transforms.RandomRotation(10),
+    # transforms.ColorJitter(brightness=0.1, contrast=0.1),
     transforms.ToTensor(),
 ])
 
 # Dataset for training and validation
 class DeepfakeDataset(torch.utils.data.Dataset):
-    def __init__(self, fake_dir, real_dir, subset='train', transform=None):
-        self.fake_dir = fake_dir
-        self.real_dir = real_dir
+    def __init__(self, data_list, transform=None):
+        self.data = data_list
         self.transform = transform
-        self.subset = subset  # 'train' or 'val'
-
-        # Load filenames based on subset (train or validation)
-        if self.subset == 'train':
-            self.fake_images = [(os.path.join(fake_dir, f), 1) for f in os.listdir(fake_dir) if f.startswith("train_fake_") and f.endswith(".png")]
-            self.real_images = [(os.path.join(real_dir, f), 0) for f in os.listdir(real_dir) if f.startswith("train_real_") and f.endswith(".png")]
-        elif self.subset == 'val':
-            self.fake_images = [(os.path.join(fake_dir, f), 1) for f in os.listdir(fake_dir) if f.startswith("valid_fake_") and f.endswith(".png")]
-            self.real_images = [(os.path.join(real_dir, f), 0) for f in os.listdir(real_dir) if f.startswith("valid_real_") and f.endswith(".png")]
-
-        # Combine both lists
-        self.data = self.fake_images + self.real_images
 
     def __len__(self):
         return len(self.data)
@@ -73,6 +61,35 @@ class DeepfakeDataset(torch.utils.data.Dataset):
         if self.transform:
             img = self.transform(img)
         return img, label
+
+# Function to create or load dataset splits and save them for future runs
+def create_or_load_splits(fake_dir, real_dir, split_file="training_dataset_splits.pkl"):
+    if os.path.exists(split_file):
+        print(f"Loading dataset splits from {split_file}")
+        with open(split_file, 'rb') as f:
+            data_splits = pickle.load(f)
+        train_data, val_data = data_splits['train'], data_splits['val']
+    else:
+        print("Creating new dataset splits...")
+
+        # Create the train and validation lists
+        train_fake_images = [(os.path.join(fake_dir, f), 1) for f in os.listdir(fake_dir) if f.startswith("train_fake_") and f.endswith(".png")]
+        train_real_images = [(os.path.join(real_dir, f), 0) for f in os.listdir(real_dir) if f.startswith("train_real_") and f.endswith(".png")]
+
+        val_fake_images = [(os.path.join(fake_dir, f), 1) for f in os.listdir(fake_dir) if f.startswith("valid_fake_") and f.endswith(".png")]
+        val_real_images = [(os.path.join(real_dir, f), 0) for f in os.listdir(real_dir) if f.startswith("valid_real_") and f.endswith(".png")]
+
+        # Combine them for training and validation
+        train_data = train_fake_images + train_real_images
+        val_data = val_fake_images + val_real_images
+
+        # Save the splits to a file
+        data_splits = {'train': train_data, 'val': val_data}
+        with open(split_file, 'wb') as f:
+            pickle.dump(data_splits, f)
+        print(f"Saved dataset splits to {split_file}")
+
+    return train_data, val_data
 
 class TestDataset(torch.utils.data.Dataset):
     def __init__(self, test_dir, transform=None):
@@ -97,19 +114,21 @@ class TestDataset(torch.utils.data.Dataset):
         return img, label
 
 
+train_data, val_data = create_or_load_splits(fake_directory, real_directory)
+
 # Create the dataset for training
-train_dataset = DeepfakeDataset(fake_directory, real_directory, subset='train', transform=transform)
+train_dataset = DeepfakeDataset(train_data, transform=transform)
 
 # Create the dataset for validation
-val_dataset = DeepfakeDataset(fake_directory, real_directory, subset='val', transform=transform)
+val_dataset = DeepfakeDataset(val_data, transform=transform)
 
 # Create the dataset for testing (different deepfake frames from a new video)
 test_dataset = TestDataset(test_directory, transform=transform)
 
 # Create DataLoader for training, validation, and testing sets
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
 
 # Define an optimizer
 optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -172,6 +191,7 @@ def validate(model, dataloader):
             for key in metrics_accum:
                 metrics_accum[key] += metrics_dict[key]
             total_batches += 1
+            print("BATCH", total_batches)
 
     # Average the metrics over all batches
     val_loss = running_loss / len(dataloader)
@@ -190,7 +210,8 @@ def validate(model, dataloader):
 
 
 # Training loop with additional metrics
-def train(model, train_loader, val_loader, optimizer, num_epochs=50, patience=5):
+def train(model, train_loader, val_loader, optimizer, num_epochs=1, patience=5):
+    print("TRAINING")
     best_val_loss = float('inf')
     best_epoch = 0
     epochs_no_improve = 0
@@ -235,6 +256,7 @@ def train(model, train_loader, val_loader, optimizer, num_epochs=50, patience=5)
             for key in metrics_accum:
                 metrics_accum[key] += metrics_dict[key]
             total_batches += 1
+            print("BATCH", total_batches)
 
         # Average the metrics over all batches
         epoch_loss = running_loss / len(train_loader)
@@ -273,6 +295,7 @@ def train(model, train_loader, val_loader, optimizer, num_epochs=50, patience=5)
 
 # Testing function with additional metrics
 def test(model, dataloader):
+    print("TESTING")
     model.eval()
     running_loss = 0.0
 
@@ -322,7 +345,7 @@ def test(model, dataloader):
     return test_loss, metrics_accum  # Return the test loss and metrics
 
 # Start the training process
-train(model, train_loader, val_loader, optimizer, num_epochs=50, patience=5)
+train(model, train_loader, val_loader, optimizer, num_epochs=1, patience=5)
 
 # Load the best model before testing
 model.load_state_dict(torch.load('best_model.pth'))
