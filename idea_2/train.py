@@ -158,6 +158,7 @@ def tensor_to_image(tensor):
 
 # Function to evaluate on validation set with additional metrics
 def validate(model, dataloader):
+    print("VALIDATING")
     model.eval()  # Set the model to evaluation mode
     running_loss = 0.0
 
@@ -191,6 +192,8 @@ def validate(model, dataloader):
             for key in metrics_accum:
                 metrics_accum[key] += metrics_dict[key]
             total_batches += 1
+            if total_batches == 100:
+                break
             print("BATCH", total_batches)
 
     # Average the metrics over all batches
@@ -256,6 +259,8 @@ def train(model, train_loader, val_loader, optimizer, num_epochs=1, patience=5):
             for key in metrics_accum:
                 metrics_accum[key] += metrics_dict[key]
             total_batches += 1
+            if total_batches == 100:
+                break
             print("BATCH", total_batches)
 
         # Average the metrics over all batches
@@ -345,7 +350,7 @@ def test(model, dataloader):
     return test_loss, metrics_accum  # Return the test loss and metrics
 
 # Start the training process
-train(model, train_loader, val_loader, optimizer, num_epochs=1, patience=5)
+train(model, train_loader, val_loader, optimizer, num_epochs=5, patience=5)
 
 # Load the best model before testing
 model.load_state_dict(torch.load('best_model.pth'))
