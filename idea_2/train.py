@@ -27,7 +27,7 @@ fake_directory = sys.argv[1]
 real_directory = sys.argv[2]
 
 # Define a separate directory for testing data
-test_directory = sys.argv[3]
+#test_directory = sys.argv[3]
 
 # Define transformations for the images
 transform = transforms.Compose([
@@ -123,12 +123,12 @@ train_dataset = DeepfakeDataset(train_data, transform=transform)
 val_dataset = DeepfakeDataset(val_data, transform=transform)
 
 # Create the dataset for testing (different deepfake frames from a new video)
-test_dataset = TestDataset(test_directory, transform=transform)
+#test_dataset = TestDataset(test_directory, transform=transform)
 
 # Create DataLoader for training, validation, and testing sets
 train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
+#test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
 
 # Define an optimizer
 optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -356,4 +356,4 @@ train(model, train_loader, val_loader, optimizer, num_epochs=5, patience=5)
 model.load_state_dict(torch.load('best_model.pth'))
 
 # Test the model on the separate test dataset (from the new directory)
-test_loss, test_metrics = test(model, test_loader)
+#test_loss, test_metrics = test(model, test_loader)
