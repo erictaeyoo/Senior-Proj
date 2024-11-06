@@ -42,7 +42,7 @@ class DeepfakeDetector(nn.Module):
         # Prepare the backbone
         backbone_name = config.get('backbone_name', 'resnet18')
         pretrained = config.get('pretrained', True)
-        input_channels = config.get('input_channels', 3)
+        input_channels = 31  # Set the input channels to match the concatenated features
         
         # Load a pre-trained model
         if backbone_name == 'resnet18':
@@ -52,23 +52,24 @@ class DeepfakeDetector(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {backbone_name}")
 
-        # Modify the first convolutional layer if input channels are different
-        if input_channels != 3:
-            original_conv = backbone.conv1
-            backbone.conv1 = nn.Conv2d(
-                input_channels,
-                original_conv.out_channels,
-                kernel_size=original_conv.kernel_size,
-                stride=original_conv.stride,
-                padding=original_conv.padding,
-                bias=original_conv.bias
-            )
-            # Initialize the new conv1 layer weights
-            nn.init.kaiming_normal_(backbone.conv1.weight, mode='fan_out', nonlinearity='relu')
+        # Modify the first convolutional layer to accept 31 input channels
+        original_conv = backbone.conv1
+        backbone.conv1 = nn.Conv2d(
+            input_channels,
+            original_conv.out_channels,
+            kernel_size=original_conv.kernel_size,
+            stride=original_conv.stride,
+            padding=original_conv.padding,
+            bias=original_conv.bias
+        )
+        # Initialize the new conv1 layer weights
+        nn.init.kaiming_normal_(backbone.conv1.weight, mode='fan_out', nonlinearity='relu')
+        
         # Remove the last fully connected layer
         backbone.fc = nn.Identity()
         logger.info(f"Backbone {backbone_name} built with input channels {input_channels}")
         return backbone
+
 
 
     def build_loss(self, config):
@@ -113,21 +114,35 @@ class DeepfakeDetector(nn.Module):
         features = self.backbone(combined_features)
         return features
 
-    def apply_wavelet_transform(self, images: torch.Tensor) -> torch.Tensor:
-        # Apply wavelet transform to each image in the batch
+    def apply_wavelet_transform(self, images: torch.Tensor, levels=3) -> torch.Tensor:
+        # Apply multilevel wavelet transform to each image in the batch
         wavelet_features = []
+        target_shape = (images.shape[2] // (2 ** levels), images.shape[3] // (2 ** levels))  # Shape at the final level
+        
         for img in images:
-            # Convert tensor to numpy array
             img_np = img.cpu().numpy()
-            # Apply wavelet transform to each channel
-            coeffs = [pywt.dwt2(img_np[c], 'db1') for c in range(img_np.shape[0])]
-            # Concatenate approximation and details coefficients
-            cA, (cH, cV, cD) = zip(*coeffs)
-            # Stack the coefficients back into a tensor
-            features = np.stack(cA + cH + cV + cD, axis=0)
+            
+            # Collect all wavelet coefficients
+            all_coeffs = []
+            for c in range(img_np.shape[0]):  # Loop over channels (e.g., RGB)
+                coeffs = pywt.wavedec2(img_np[c], 'db1', level=levels)
+                # Only collect detail coefficients
+                for detail_level in coeffs[1:]:  # Ignore coeffs[0], the approximation
+                    cH, cV, cD = detail_level
+                    # Resize each component to the target shape
+                    cH_resized = cv2.resize(cH, target_shape, interpolation=cv2.INTER_LINEAR)
+                    cV_resized = cv2.resize(cV, target_shape, interpolation=cv2.INTER_LINEAR)
+                    cD_resized = cv2.resize(cD, target_shape, interpolation=cv2.INTER_LINEAR)
+                    
+                    all_coeffs.extend([cH_resized, cV_resized, cD_resized])
+            
+            # Stack all level features into a tensor
+            features = np.stack(all_coeffs, axis=0)
             wavelet_features.append(torch.tensor(features))
+            
         wavelet_features = torch.stack(wavelet_features).to(images.device)
         return wavelet_features
+
 
     def apply_sobel_filters(self, images: torch.Tensor) -> torch.Tensor:
         # Apply Sobel filters to each image in the batch
