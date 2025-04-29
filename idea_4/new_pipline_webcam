@@ -1,0 +1,165 @@
+import sys, time, os
+from pathlib import Path
+import cv2, numpy as np, torch
+from torchvision import transforms
+from PIL import Image
+import dlib                                             # for robust face boxes
+
+# ------------------------------------------------------------------------
+# 1.  Make DeepFaceLive code importable  (adapt the path if you cloned elsewhere)
+# ------------------------------------------------------------------------
+dfl_root = Path(__file__).resolve().parent / "DeepFaceLive"
+sys.path.append(str(dfl_root))                          # <-- key line
+
+from modelhub.DFLive.DFMModel import (
+    DFMModelInfo, DFMModelInitializer, get_available_devices
+)
+
+# ------------------------------------------------------------------------
+# 2.  Choose a .dfm model and load it (auto-downloads if missing)
+# ------------------------------------------------------------------------
+models_dir = dfl_root / "userdata" / "dfm_models"
+models_dir.mkdir(parents=True, exist_ok=True)
+
+model_info = DFMModelInfo(
+    name="Keanu Reeves 320",
+    model_path=models_dir / "Keanu_Reeves_320.dfm",
+    url="https://github.com/iperov/DeepFaceLive/releases/download/KEANU_REEVES_320/Keanu_Reeves_320.dfm",
+)
+# CPU is fine; use get_available_devices()[0] for GPU if you have one
+init = DFMModelInitializer(model_info)
+while True:
+    ev = init.process_events()
+    if ev.new_status_downloading and ev.download_progress is None:
+        print("Downloading model …")
+    if ev.download_progress is not None:
+        print(f"  {ev.download_progress:.1f}%")
+    if ev.new_status_initialized:
+        dfm = ev.dfm_model
+        break
+    if ev.new_status_error:
+        sys.exit(ev.error)
+    time.sleep(0.25)
+print("Loaded .dfm:", dfm.get_model_path())
+
+# ------------------------------------------------------------------------
+# 3.  Deepfake-detector network                                                       
+# ------------------------------------------------------------------------
+from DeepfakeDetector_conv import DeepfakeDetector      # your class
+
+device = (
+    torch.device("mps")
+    if torch.backends.mps.is_available()
+    else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+)
+
+detector_net = DeepfakeDetector(
+    {"model_name": "resnet18", "pretrained": False, "num_classes": 2}
+).to(device)
+
+ckpt = torch.load("best_model_conv.pth", map_location=device)
+detector_net.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt, strict=False)
+detector_net.eval()
+
+transform = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5] * 3, [0.5] * 3),
+    ]
+)
+
+# ------------------------------------------------------------------------
+# 4.  Face detector for both swapping & classification                    
+# ------------------------------------------------------------------------
+dlib_detector = dlib.get_frontal_face_detector()
+
+# ------------------------------------------------------------------------
+# 5.  Webcam + main loop                                                  
+# ------------------------------------------------------------------------
+cap = cv2.VideoCapture(0)
+frame_cnt, predict_every = 0, 15
+cached_faces = []
+
+def blend(src, dst, mask):
+    """Alpha-blend dst onto src using mask ∈ [0,255] of shape (1,H,W,1) or (H,W,1)"""
+    if mask.ndim == 4:
+        mask = np.squeeze(mask, axis=(0, 3))  # (1,H,W,1) → (H,W)
+    elif mask.ndim == 3:
+        mask = np.squeeze(mask, axis=2)       # (H,W,1) → (H,W)
+
+    alpha = (mask.astype(np.float32) / 255.0)[..., None]  # → (H,W,1)
+    return (src * (1 - alpha) + dst * alpha).astype(np.uint8)
+
+while cap.isOpened():
+    ok, frame = cap.read()
+    if not ok:
+        break
+
+    # --------------------------------------------------------------------
+    # 5a.  SWAP every face once per frame
+    # --------------------------------------------------------------------
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    faces = dlib_detector(rgb, 0)
+
+    for f in faces:
+        x1, y1, x2, y2 = max(f.left(), 0), max(f.top(), 0), min(f.right(), frame.shape[1]-1), min(f.bottom(), frame.shape[0]-1)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        crop = frame[y1:y2, x1:x2]
+        celeb, celeb_mask, _ = dfm.convert(crop)
+        frame[y1:y2, x1:x2] = blend(crop, celeb, celeb_mask[0, ..., 0])
+
+
+    # --------------------------------------------------------------------
+    # 5b.  Deep-fake classification every N frames
+    # --------------------------------------------------------------------
+    if frame_cnt % predict_every == 0:
+        cached_faces = []
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        boxes = dlib_detector(gray, 0)                  # detector again, but cheap
+        for b in boxes:
+            x1, y1, x2, y2 = (
+                max(b.left(), 0),
+                max(b.top(), 0),
+                min(b.right(), frame.shape[1]-1),
+                min(b.bottom(), frame.shape[0]-1),
+            )
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            inp = transform(pil).unsqueeze(0).to(device)
+            with torch.no_grad():
+                logits = detector_net({"image": inp})["logits"]
+                probs = torch.softmax(logits, 1)
+                cls = int(torch.argmax(probs))
+                conf = float(probs[0, cls])
+            label = "Deepfake" if cls else "Real"
+            color = (0, 0, 255) if cls else (0, 255, 0)
+            cached_faces.append((x1, y1, x2, y2, label, conf, color))
+
+    # --------------------------------------------------------------------
+    # 5c.  Draw cached predictions
+    # --------------------------------------------------------------------
+    for x1, y1, x2, y2, label, conf, color in cached_faces:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            frame,
+            f"{label} ({conf:.2f})",
+            (x1, y1 - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    cv2.imshow("Swap + Detector", frame)
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+    frame_cnt += 1
+
+cap.release()
+cv2.destroyAllWindows()
